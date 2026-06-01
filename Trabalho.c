@@ -1,73 +1,72 @@
-// Trabalho de Sistemas Operacionais - FMS (Gerenciador de Processos Simples)
-// Alunos: João Vitor dos Santos Pereira
+// trabalho de SO - FMS simples
+// aluno: João Vitor dos Santos Pereira
 
 #include <stdio.h>
 #include <windows.h>
 #include <string.h>
 #include <psapi.h>
 
-// estrutura global para acessar o processo na thread
+// variavel global pra thread conseguir acessar o processo
+// (nao achei jeito melhor de fazer isso)
 PROCESS_INFORMATION pi;
 
-// função pra converter FILETIME (formato estranho do Windows)
-// pra um número que a gente consegue somar
-ULONGLONG filetimeToULL(FILETIME ft) {
-    return (((ULONGLONG)ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
+// converte aquele negocio esquisito de tempo do windows pra um numero normal
+ULONGLONG convertetempo(FILETIME ft) {
+    ULONGLONG resultado = ((ULONGLONG)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    return resultado;
 }
 
-// thread que fica monitorando o processo
-DWORD WINAPI monitor(LPVOID arg) {
+// essa thread roda em paralelo e fica de olho no processo
+DWORD WINAPI threadMonitor(LPVOID arg) {
 
-    // limites passados pelo main
-    int limite_tempo = ((int*)arg)[0];
-    int limite_cpu = ((int*)arg)[1];
-    int limite_mem = ((int*)arg)[2];
+    int *limites = (int*)arg;
+    int tmax  = limites[0];
+    int cpumax = limites[1];
+    int memmax = limites[2];
 
-    int tempo = 0;
+    int segundos = 0;
 
     while (1) {
-        Sleep(1000); // espera 1 segundo
-        tempo++;
+        Sleep(1000);
+        segundos++;
 
-        // verifica se o processo ainda está rodando
-        DWORD status;
-        GetExitCodeProcess(pi.hProcess, &status);
-        if (status != STILL_ACTIVE) break;
+        // checa se o processo ainda ta rodando
+        DWORD saida;
+        GetExitCodeProcess(pi.hProcess, &saida);
+        if (saida != STILL_ACTIVE) {
+            break;
+        }
 
-        // pega tempo de CPU
-        FILETIME creation, exit, kernel, user;
-        GetProcessTimes(pi.hProcess, &creation, &exit, &kernel, &user);
+        // pega os tempos de CPU do processo
+        FILETIME tcriacao, tfim, tkernel, tusuario;
+        GetProcessTimes(pi.hProcess, &tcriacao, &tfim, &tkernel, &tusuario);
 
-        ULONGLONG cpu = filetimeToULL(kernel) + filetimeToULL(user);
-        double cpu_seg = cpu / 10000000.0; // converter pra segundos
+        // soma kernel + usuario e converte pra segundos
+        // o windows usa unidades de 100 nanossegundos entao divide por 10000000
+        double cpu_seg = (convertetempo(tkernel) + convertetempo(tusuario)) / 10000000.0;
 
-        // pega uso de memória
-        PROCESS_MEMORY_COUNTERS pmc;
-        GetProcessMemoryInfo(pi.hProcess, &pmc, sizeof(pmc));
+        // pega o uso de memoria
+        PROCESS_MEMORY_COUNTERS info_mem;
+        GetProcessMemoryInfo(pi.hProcess, &info_mem, sizeof(info_mem));
+        double mem_mb = info_mem.WorkingSetSize / (1024.0 * 1024.0);
 
-        double memoria_mb = pmc.WorkingSetSize / (1024.0 * 1024.0);
+        printf("tempo: %ds | cpu usada: %.2fs | memoria: %.2fMB\n", segundos, cpu_seg, mem_mb);
 
-        // mostra tudo na tela
-        printf("Tempo: %d s | CPU: %.2f s | Memoria: %.2f MB\n",
-               tempo, cpu_seg, memoria_mb);
-
-        // verifica se passou do tempo
-        if (tempo >= limite_tempo) {
-            printf("Timeout atingido!\n");
+        // verifica os limites um por um
+        if (segundos >= tmax) {
+            printf(">> timeout atingido, matando processo...\n");
             TerminateProcess(pi.hProcess, 0);
             break;
         }
 
-        // verifica CPU
-        if (cpu_seg >= limite_cpu) {
-            printf("Limite de CPU atingido!\n");
+        if (cpu_seg >= cpumax) {
+            printf(">> limite de cpu atingido, matando processo...\n");
             TerminateProcess(pi.hProcess, 0);
             break;
         }
 
-        // verifica memória
-        if (memoria_mb >= limite_mem) {
-            printf("Limite de memoria atingido!\n");
+        if (mem_mb >= memmax) {
+            printf(">> limite de memoria atingido, matando processo...\n");
             TerminateProcess(pi.hProcess, 0);
             break;
         }
@@ -78,80 +77,76 @@ DWORD WINAPI monitor(LPVOID arg) {
 
 int main() {
 
-    double cpu_total = 0;      // CPU acumulada
-    double limite_global;      // limite total do FMS
+    double cpu_acumulada = 0;
+    double cota_global;
 
-    printf("Quota total de CPU do FMS (segundos): ");
-    scanf("%lf", &limite_global);
+    printf("informe a cota total de CPU do FMS (em segundos): ");
+    scanf("%lf", &cota_global);
 
-    // loop principal (FMS fica rodando até acabar a quota)
+    // loop principal, o FMS fica rodando ate acabar a cota
     while (1) {
 
-        // se passou do limite global, encerra tudo
-        if (cpu_total >= limite_global) {
-            printf("\nQuota global de CPU atingida. Encerrando FMS...\n");
+        // verifica se ainda tem cota disponivel
+        if (cpu_acumulada >= cota_global) {
+            printf("\ncota de CPU esgotada. encerrando FMS...\n");
             break;
         }
 
         char programa[200];
-        int limites[3]; // tempo, cpu, memoria
+        int limites[3];
 
-        printf("\nPrograma (ou sair): ");
+        printf("\ndigite o programa pra executar (ou 'sair'): ");
         scanf(" %[^\n]", programa);
 
-        // opção de sair manual
-        if (strcmp(programa, "sair") == 0) break;
+        if (strcmp(programa, "sair") == 0) {
+            break;
+        }
 
-        // leitura dos limites
-        printf("Timeout (segundos): ");
+        printf("timeout em segundos: ");
         scanf("%d", &limites[0]);
 
-        printf("Limite de CPU (segundos): ");
+        printf("limite de CPU em segundos: ");
         scanf("%d", &limites[1]);
 
-        printf("Limite de memoria (MB): ");
+        printf("limite de memoria em MB: ");
         scanf("%d", &limites[2]);
 
+        // prepara as estruturas antes de criar o processo
         STARTUPINFO si;
-
-        // limpa estruturas
         ZeroMemory(&si, sizeof(si));
         si.cb = sizeof(si);
         ZeroMemory(&pi, sizeof(pi));
 
-        // cria o processo
+        // tenta criar o processo
         if (!CreateProcess(NULL, programa, NULL, NULL, FALSE,
                            CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi)) {
-            printf("Erro ao criar processo. Codigo: %lu\n", GetLastError());
+            printf("nao consegui criar o processo. codigo de erro: %lu\n", GetLastError());
             continue;
         }
 
-        printf("Processo iniciado!\n");
+        printf("processo criado com sucesso!\n");
 
-        // cria thread pra monitorar
-        HANDLE thread = CreateThread(NULL, 0, monitor, limites, 0, NULL);
+        // cria a thread de monitoramento passando os limites
+        HANDLE hthread = CreateThread(NULL, 0, threadMonitor, limites, 0, NULL);
 
-        // espera o processo terminar
+        // espera o processo terminar (seja pelo timeout ou normalmente)
         WaitForSingleObject(pi.hProcess, INFINITE);
 
-        // pega CPU final usada
-        FILETIME creation, exit, kernel, user;
-        GetProcessTimes(pi.hProcess, &creation, &exit, &kernel, &user);
+        // depois que terminou, pega o cpu total que ele usou
+        FILETIME tcriacao, tfim, tkernel, tusuario;
+        GetProcessTimes(pi.hProcess, &tcriacao, &tfim, &tkernel, &tusuario);
 
-        ULONGLONG cpu = filetimeToULL(kernel) + filetimeToULL(user);
-        double cpu_seg = cpu / 10000000.0;
+        double cpu_usada = (converteempo(tkernel) + converteempo(tusuario)) / 10000000.0;
 
-        // soma no total
-        cpu_total += cpu_seg;
+        cpu_acumulada += cpu_usada;
 
-        printf("Processo finalizado.\n");
-        printf("CPU usada nesta execucao: %.2f s\n", cpu_seg);
-        printf("CPU acumulada: %.2f / %.2f s\n", cpu_total, limite_global);
+        printf("\nprocesso finalizado.\n");
+        printf("cpu usada agora: %.2fs\n", cpu_usada);
+        printf("cpu acumulada ate agora: %.2fs / %.2fs\n", cpu_acumulada, cota_global);
 
-        // encerra thread e libera memória
-        TerminateThread(thread, 0);
-
-        CloseHandle(thread);
+        // fecha tudo certinho
+        TerminateThread(hthread, 0);
+        CloseHandle(hthread);
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
     }
